@@ -378,6 +378,7 @@ class BeamModulePlugin implements Plugin<Project> {
     def apex_core_version = "3.7.0"
     def apex_malhar_version = "3.4.0"
     def aws_java_sdk_version = "1.11.519"
+    def aws_java_sdk2_version = "2.5.71"
     def cassandra_driver_version = "3.6.0"
     def generated_grpc_beta_version = "0.44.0"
     def generated_grpc_ga_version = "1.43.0"
@@ -423,12 +424,17 @@ class BeamModulePlugin implements Plugin<Project> {
         avro                                        : "org.apache.avro:avro:1.8.2",
         avro_tests                                  : "org.apache.avro:avro:1.8.2:tests",
         aws_java_sdk_cloudwatch                     : "com.amazonaws:aws-java-sdk-cloudwatch:$aws_java_sdk_version",
+        aws_java_sdk2_cloudwatch                    : "software.amazon.awssdk:cloudwatch:$aws_java_sdk2_version",
         aws_java_sdk_core                           : "com.amazonaws:aws-java-sdk-core:$aws_java_sdk_version",
         aws_java_sdk_dynamodb                       : "com.amazonaws:aws-java-sdk-dynamodb:$aws_java_sdk_version",
+        aws_java_sdk2_dynamodb                      : "software.amazon.awssdk:dynamodb:$aws_java_sdk2_version",
         aws_java_sdk_kinesis                        : "com.amazonaws:aws-java-sdk-kinesis:$aws_java_sdk_version",
         aws_java_sdk_s3                             : "com.amazonaws:aws-java-sdk-s3:$aws_java_sdk_version",
         aws_java_sdk_sns                            : "com.amazonaws:aws-java-sdk-sns:$aws_java_sdk_version",
         aws_java_sdk_sqs                            : "com.amazonaws:aws-java-sdk-sqs:$aws_java_sdk_version",
+        aws_java_sdk2_apache_client                 : "software.amazon.awssdk:apache-client:$aws_java_sdk2_version",
+        aws_java_sdk2_auth                          : "software.amazon.awssdk:auth:$aws_java_sdk2_version",
+        aws_java_sdk2_sdk_core                      : "software.amazon.awssdk:sdk-core:$aws_java_sdk2_version",
         bigdataoss_gcsio                            : "com.google.cloud.bigdataoss:gcsio:$google_cloud_bigdataoss_version",
         bigdataoss_util                             : "com.google.cloud.bigdataoss:util:$google_cloud_bigdataoss_version",
         bigtable_client_core                        : "com.google.cloud.bigtable:bigtable-client-core:1.8.0",
