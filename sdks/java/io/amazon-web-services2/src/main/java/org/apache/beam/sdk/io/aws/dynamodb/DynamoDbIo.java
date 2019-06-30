@@ -142,7 +142,7 @@ public final class DynamoDbIo {
     abstract Integer getSegmentId();
 
     @Nullable
-    abstract SerializableFunction<ScanResponse, T> getScanResultMapperFn();
+    abstract SerializableFunction<ScanResponse, T> getScanResponseMapperFn();
 
     @Nullable
     abstract Coder<T> getCoder();
@@ -158,8 +158,8 @@ public final class DynamoDbIo {
 
       abstract Builder<T> setSegmentId(Integer segmentId);
 
-      abstract Builder<T> setScanResultMapperFn(
-          SerializableFunction<ScanResponse, T> scanResultMapperFn);
+      abstract Builder<T> setScanResponseMapperFn(
+          SerializableFunction<ScanResponse, T> scanResponseMapperFn);
 
       abstract Builder<T> setCoder(Coder<T> coder);
 
@@ -193,14 +193,14 @@ public final class DynamoDbIo {
       return toBuilder().setSegmentId(segmentId).build();
     }
 
-    public Read<T> withScanResultMapperFn(
+    public Read<T> withScanResponseMapperFn(
         SerializableFunction<ScanResponse, T> scanResultMapperFn) {
       checkArgument(scanResultMapperFn != null, "scanResultMapper can not be null");
-      return toBuilder().setScanResultMapperFn(scanResultMapperFn).build();
+      return toBuilder().setScanResponseMapperFn(scanResultMapperFn).build();
     }
 
     public Read<List<Map<String, AttributeValue>>> items() {
-      return withScanResultMapperFn(new ItemsMapper())
+      return withScanResponseMapperFn(new ItemsMapper())
           .withCoder(ListCoder.of(MapCoder.of(StringUtf8Coder.of(), AttributeValueCoder.of())));
     }
 
@@ -250,11 +250,11 @@ public final class DynamoDbIo {
         DynamoDbClient client = spec.getAwsClientsProvider().createDynamoDB();
 
         ScanRequest scanRequest = spec.getScanRequestFn().apply(null);
-        // TODO: check if the new scanRequest have copied succesfully, with all properties
-        ScanRequest scanRequestWithSegment = scanRequest.toBuilder().segment(1).build();
+        ScanRequest scanRequestWithSegment =
+            scanRequest.toBuilder().segment(spec.getSegmentId()).build();
 
         ScanResponse scanResponse = client.scan(scanRequestWithSegment);
-        out.output(spec.getScanResultMapperFn().apply(scanResponse));
+        out.output(spec.getScanResponseMapperFn().apply(scanResponse));
       }
     }
 

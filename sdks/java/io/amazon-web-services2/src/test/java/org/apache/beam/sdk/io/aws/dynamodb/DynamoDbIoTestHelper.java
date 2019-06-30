@@ -54,8 +54,8 @@ import software.amazon.awssdk.services.dynamodb.model.WriteRequest;
 class DynamoDbIoTestHelper implements Serializable {
 
   @Rule
-  public static GenericContainer dynamoContainer = new GenericContainer<>("amazon/dynamodb-local:latest")
-      .withExposedPorts(8000);
+  public static GenericContainer dynamoContainer =
+      new GenericContainer<>("amazon/dynamodb-local:latest").withExposedPorts(8000);
 
   private static DynamoDbClient dynamoDBClient;
 
