@@ -23,6 +23,8 @@ import static org.junit.Assert.fail;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
+
+import com.google.common.collect.ImmutableList;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.testing.ExpectedLogs;
 import org.apache.beam.sdk.testing.PAssert;
@@ -32,6 +34,7 @@ import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
 import org.joda.time.Duration;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -43,6 +46,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.BatchWriteItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
+import software.amazon.awssdk.services.dynamodb.model.PutRequest;
 import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 import software.amazon.awssdk.services.dynamodb.model.WriteRequest;
 
@@ -154,6 +158,38 @@ public class DynamoDbIoTest implements Serializable {
     }
   }
 
+  @Test
+  public void testWriteDataToDynamo_v2() {
+    List<KV<String, Integer>> items = ImmutableList.of(KV.of("test1", 111), KV.of("test2", 222), KV.of("test3", 333));
+
+    final PCollection<Void> output =
+        pipeline
+            .apply(Create.of(items))
+            .apply(
+                DynamoDbIo.<KV<String, Integer>>write()
+                    .withWriteRequestMapperFn(
+                        (SerializableFunction<KV<String, Integer>, KV<String, WriteRequest>>)
+                            entry -> {
+                              Map<String, AttributeValue> putRequest = ImmutableMap.of(
+                                  "hashKey1", AttributeValue.builder().s(entry.getKey()).build(),
+                                  "rangeKey2", AttributeValue.builder().n(entry.getValue().toString()).build());
+
+                              WriteRequest writeRequest = WriteRequest.builder().putRequest(
+                                  PutRequest.builder().item(putRequest).build())
+                                  .build();
+                              return KV.of(tableName, writeRequest);
+                            })
+                    .withRetryConfiguration(
+                        DynamoDbIo.RetryConfiguration.create(5, Duration.standardMinutes(1)))
+                    .withAwsClientsProvider(
+                        AwsClientsProviderMock.of(DynamoDbIoTestHelper.getDynamoDBClient())));
+
+    final PCollection<Long> publishedResultsSize = output.apply(Count.globally());
+    PAssert.that(publishedResultsSize).containsInAnyOrder(0L);
+
+    pipeline.run().waitUntilFinish();
+  }
+
   // Test cases for Writer.
   @Test
   public void testWriteDataToDynamo() {
@@ -179,6 +215,48 @@ public class DynamoDbIoTest implements Serializable {
   }
 
   @Rule public ExpectedException thrown = ExpectedException.none();
+
+  @Test
+  public void testRetries_v2() throws Throwable {
+    thrown.expectMessage("Error writing to DynamoDB");
+
+    List<KV<String, Integer>> items = ImmutableList.of(KV.of("test1", 111), KV.of("test2", 222), KV.of("test3", 333));
+
+    DynamoDbClient amazonDynamoDBMock = Mockito.mock(DynamoDbClient.class);
+    Mockito.when(amazonDynamoDBMock.batchWriteItem(Mockito.any(BatchWriteItemRequest.class)))
+        .thenThrow(DynamoDbException.builder().message("Service unavailable").build());
+
+    pipeline
+        .apply(Create.of(items))
+        .apply(
+            DynamoDbIo.<KV<String, Integer>>write()
+                .withWriteRequestMapperFn(
+                    (SerializableFunction<KV<String, Integer>, KV<String, WriteRequest>>)
+                        entry -> {
+                          Map<String, AttributeValue> putRequest = ImmutableMap.of(
+                              "hashKey1", AttributeValue.builder().s(entry.getKey()).build(),
+                              "rangeKey2", AttributeValue.builder().n(entry.getValue().toString()).build());
+
+                          WriteRequest writeRequest = WriteRequest.builder().putRequest(
+                              PutRequest.builder().item(putRequest).build())
+                              .build();
+                          return KV.of(tableName, writeRequest);
+                        })
+                .withRetryConfiguration(
+                    DynamoDbIo.RetryConfiguration.create(4, Duration.standardSeconds(10)))
+                .withAwsClientsProvider(AwsClientsProviderMock.of(amazonDynamoDBMock)));
+
+    try {
+      pipeline.run().waitUntilFinish();
+    } catch (final Pipeline.PipelineExecutionException e) {
+      // check 3 retries were initiated by inspecting the log before passing on the exception
+      expectedLogs.verifyWarn(String.format(DynamoDbIo.Write.WriteFn.RETRY_ATTEMPT_LOG, 1));
+      expectedLogs.verifyWarn(String.format(DynamoDbIo.Write.WriteFn.RETRY_ATTEMPT_LOG, 2));
+      expectedLogs.verifyWarn(String.format(DynamoDbIo.Write.WriteFn.RETRY_ATTEMPT_LOG, 3));
+      throw e.getCause();
+    }
+    fail("Pipeline is expected to fail because we were unable to write to DynamoDB.");
+  }
 
   @Test
   public void testRetries() throws Throwable {
