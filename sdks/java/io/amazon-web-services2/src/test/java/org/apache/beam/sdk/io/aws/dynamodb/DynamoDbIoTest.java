@@ -31,7 +31,11 @@ import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.Count;
 import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.MapElements;
+import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.apache.beam.sdk.transforms.SimpleFunction;
 import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.vendor.guava.v20_0.com.google.common.collect.ImmutableMap;
@@ -85,6 +89,28 @@ public class DynamoDbIoTest implements Serializable {
                         input ->
                             ScanRequest.builder().tableName(tableName).totalSegments(1).build())
                 .items());
+    PAssert.that(actual).containsInAnyOrder(expected);
+    pipeline.run().waitUntilFinish();
+  }
+
+  @Test
+  public void testReadScanResult_v2() {
+    PCollection<List<Map<String, AttributeValue>>> actual =
+        pipeline.apply(
+            DynamoDbIo.<List<Map<String, AttributeValue>>>read()
+                .withAwsClientsProvider(
+                    AwsClientsProviderMock.of(DynamoDbIoTestHelper.getDynamoDBClient()))
+                .withScanRequestFn(
+                    (SerializableFunction<Void, ScanRequest>)
+                        input ->
+                            ScanRequest.builder().tableName(tableName).totalSegments(3).build())
+                .items())
+        .apply(ParDo.of(new DoFn<List<Map<String, AttributeValue>>, List<Map<String, AttributeValue>>>() {
+          @ProcessElement
+          public void processElement(@Element List<Map<String, AttributeValue>> input, OutputReceiver<List<Map<String, AttributeValue>>> out) {
+            out.output(input);
+          }
+        }));
     PAssert.that(actual).containsInAnyOrder(expected);
     pipeline.run().waitUntilFinish();
   }
