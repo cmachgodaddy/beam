@@ -28,12 +28,12 @@ import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.Immutabl
 import software.amazon.awssdk.services.sns.model.PublishResponse;
 
 /** Custom Coder for handling publish result. */
-public class PublishResultCoder extends Coder<PublishResponse> implements Serializable {
-  private static final PublishResultCoder INSTANCE = new PublishResultCoder();
+public class PublishResponseCoder extends Coder<PublishResponse> implements Serializable {
+  private static final PublishResponseCoder INSTANCE = new PublishResponseCoder();
 
-  private PublishResultCoder() {}
+  private PublishResponseCoder() {}
 
-  static PublishResultCoder of() {
+  static PublishResponseCoder of() {
     return INSTANCE;
   }
 
