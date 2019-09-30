@@ -28,7 +28,6 @@ import com.amazonaws.services.kinesis.producer.IKinesisProducer;
 import com.amazonaws.services.kinesis.producer.KinesisProducerConfiguration;
 import com.amazonaws.services.kinesis.producer.UserRecordFailedException;
 import com.amazonaws.services.kinesis.producer.UserRecordResult;
-
 import com.google.auto.value.AutoValue;
 import com.google.common.util.concurrent.ListenableFuture;
 import java.io.IOException;
@@ -37,23 +36,47 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingDeque;
 import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Experimental;
+import org.apache.beam.sdk.coders.SerializableCoder;
 import org.apache.beam.sdk.io.Read.Unbounded;
+import org.apache.beam.sdk.transforms.Create;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.transforms.Reshuffle;
+import org.apache.beam.sdk.transforms.SerializableFunction;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PDone;
+import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
 import org.joda.time.Duration;
 import org.joda.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import software.amazon.awssdk.services.kinesis.KinesisAsyncClient;
+import software.amazon.awssdk.services.kinesis.model.ListShardsRequest;
+import software.amazon.awssdk.services.kinesis.model.ListShardsResponse;
+import software.amazon.awssdk.services.kinesis.model.Record;
+import software.amazon.awssdk.services.kinesis.model.ShardIteratorType;
+import software.amazon.awssdk.services.kinesis.model.SubscribeToShardEvent;
+import software.amazon.awssdk.services.kinesis.model.SubscribeToShardRequest;
+import software.amazon.awssdk.services.kinesis.model.SubscribeToShardResponseHandler;
+import software.amazon.kinesis.exceptions.InvalidStateException;
+import software.amazon.kinesis.exceptions.ShutdownException;
+import software.amazon.kinesis.lifecycle.events.InitializationInput;
+import software.amazon.kinesis.lifecycle.events.LeaseLostInput;
+import software.amazon.kinesis.lifecycle.events.ProcessRecordsInput;
+import software.amazon.kinesis.lifecycle.events.ShardEndedInput;
+import software.amazon.kinesis.lifecycle.events.ShutdownRequestedInput;
+import software.amazon.kinesis.processor.ShardRecordProcessor;
+import software.amazon.kinesis.retrieval.KinesisClientRecord;
 
 /**
  * {@link PTransform}s for reading from and writing to <a
@@ -240,6 +263,10 @@ public final class KinesisIO {
         .setUpToDateThreshold(Duration.ZERO)
         .setWatermarkPolicyFactory(WatermarkPolicyFactory.withArrivalTimePolicy())
         .build();
+  }
+
+  public static <T> Subscribe<T> subscribe() {
+    return new AutoValue_KinesisIO_Subscribe.Builder().build();
   }
 
   /** A {@link PTransform} writing data to Kinesis. */
@@ -440,6 +467,250 @@ public final class KinesisIO {
       }
 
       return input.apply(transform);
+    }
+  }
+
+  @AutoValue
+  public abstract static class Subscribe<T> extends PTransform<PBegin, PCollection<T>> {
+    @Nullable
+    abstract String getStreamName();
+
+    @Nullable
+    abstract SerializableFunction<List<Record>, T> getRecieveRecords();
+
+    @Nullable
+    abstract KinesisAsyncClient getKinesisAsyncClient();
+
+    @Nullable
+    abstract String getConsumerArn();
+
+    @Nullable
+    abstract String getShardId();
+
+    @Nullable
+    abstract ShardIteratorType getStartingPosition();
+
+    @Nullable
+    abstract SerializableFunction<SubscribeToShardEvent, T> getSubscribeResponseMapperFn();
+
+    abstract Builder<T> toBuilder();
+
+    @AutoValue.Builder
+    abstract static class Builder<T> {
+      abstract Builder<T> setStreamName(String streamName);
+
+      abstract Builder<T> setRecieveRecords(SerializableFunction<List<Record>, T> recieveRecords);
+
+      abstract Builder<T> setKinesisAsyncClient(KinesisAsyncClient client);
+
+      abstract Builder<T> setConsumerArn(String consumerArn);
+
+      abstract Builder<T> setShardId(String shardId);
+
+      abstract Builder<T> setStartingPosition(ShardIteratorType startingPosition);
+
+      abstract Builder<T> setSubscribeResponseMapperFn(
+          SerializableFunction<SubscribeToShardEvent, T> subscribeResponseMapperFn);
+
+      abstract Subscribe<T> build();
+    }
+
+    /** Specify reading from streamName. */
+    public Subscribe<T> withStreamName(String streamName) {
+      return toBuilder().setStreamName(streamName).build();
+    }
+
+    public Subscribe<T> withRecieveRecords(SerializableFunction<List<Record>, T> recieveRecords) {
+      return toBuilder().setRecieveRecords(recieveRecords).build();
+    }
+
+    public Subscribe<T> withKinesisAsyncClient(KinesisAsyncClient client) {
+      return toBuilder().setKinesisAsyncClient(client).build();
+    }
+
+    public Subscribe<T> withConsumerArn(String consumerArn) {
+      return toBuilder().setConsumerArn(consumerArn).build();
+    }
+
+    public Subscribe<T> withShardId(String shardId) {
+      return toBuilder().setShardId(shardId).build();
+    }
+
+    public Subscribe<T> withStartingPosition(ShardIteratorType startingPosition) {
+      return toBuilder().setStartingPosition(startingPosition).build();
+    }
+
+    public Subscribe<T> withSubscribeResponseMapperFn(
+        SerializableFunction<SubscribeToShardEvent, T> subscribeResponseMapperFn) {
+      return toBuilder().setSubscribeResponseMapperFn(subscribeResponseMapperFn).build();
+    }
+
+    public Subscribe<List<Record>> items() {
+      return withSubscribeResponseMapperFn(new ItemsMapper());
+      // .withCoder(ListCoder.of(MapCoder.of(StringUtf8Coder.of(), AttributeValueCoder.of())));
+    }
+
+    @Override
+    public PCollection<T> expand(PBegin input) {
+
+      PCollection<Subscribe<T>> splits =
+          (PCollection<Subscribe<T>>)
+              input.apply("Create", Create.of(this)).apply("Split", ParDo.of(new SplitFn()));
+      splits.setCoder(SerializableCoder.of(new TypeDescriptor<Subscribe<T>>() {}));
+
+      PCollection<T> output =
+          (PCollection<T>)
+              splits
+                  .apply("Reshuffle", Reshuffle.viaRandomKey())
+                  .apply("Listening", ParDo.of(new SubscribeFn<>()));
+
+      // output.setCoder(getCoder());
+      return output;
+    }
+
+    private static class SplitFn<T> extends DoFn<Subscribe<T>, Subscribe<T>> {
+      @ProcessElement
+      public void processElement(@Element Subscribe<T> spec, OutputReceiver<Subscribe<T>> out) {
+        ListShardsRequest request =
+            ListShardsRequest.builder().streamName(spec.getStreamName()).build();
+        ListShardsResponse response = spec.getKinesisAsyncClient().listShards(request).join();
+        response.shards().forEach(s -> out.output(spec.withShardId(s.shardId())));
+      }
+    }
+
+    private static class SubscribeFn<T> extends DoFn<Subscribe<T>, T> {
+      @ProcessElement
+      public void processElement(@Element Subscribe<T> spec, OutputReceiver<T> out) {
+        new KinesisSubscriberSDK(out, spec).listen();
+      }
+    }
+
+    static final class ItemsMapper<T>
+        implements SerializableFunction<SubscribeToShardEvent, List<Record>> {
+      @Override
+      public List<Record> apply(@Nullable SubscribeToShardEvent subscribeToShardEvent) {
+        if (subscribeToShardEvent == null) {
+          return Collections.emptyList();
+        }
+        return subscribeToShardEvent.records();
+      }
+    }
+
+    private static class KinesisSubscriberSDK {
+      private DoFn.OutputReceiver out;
+      private Subscribe spec;
+
+      public KinesisSubscriberSDK(DoFn.OutputReceiver out, Subscribe spec) {
+        this.out = out;
+        this.spec = spec;
+      }
+
+      private CompletableFuture<Void> responseHandlerBuilder_VisitorBuilder(
+          SubscribeToShardRequest request) {
+        SubscribeToShardResponseHandler.Visitor visitor =
+            SubscribeToShardResponseHandler.Visitor.builder()
+                .onSubscribeToShardEvent(
+                    e -> out.output(spec.getSubscribeResponseMapperFn().apply(e)))
+                .build();
+        SubscribeToShardResponseHandler responseHandler =
+            SubscribeToShardResponseHandler.builder()
+                .onError(t -> System.err.println("Error during stream - " + t.getMessage()))
+                .subscriber(visitor)
+                .build();
+
+        return spec.getKinesisAsyncClient().subscribeToShard(request, responseHandler);
+      }
+
+      public void listen() {
+        SubscribeToShardRequest request =
+            SubscribeToShardRequest.builder()
+                .consumerARN(spec.getConsumerArn())
+                .shardId(spec.getShardId())
+                .startingPosition(s -> s.type(spec.getStartingPosition()))
+                .build();
+
+        responseHandlerBuilder_VisitorBuilder(request).join();
+      }
+    }
+
+    private static class KinesisSubscriberKCL<T> implements ShardRecordProcessor {
+      private DoFn.OutputReceiver<T> output;
+      private Subscribe<T> spec;
+
+      private static final String SHARD_ID_MDC_KEY = "ShardId";
+      private String shardId;
+
+      public KinesisSubscriberKCL(DoFn.OutputReceiver<T> output, Subscribe<T> spec) {
+        this.output = output;
+        this.spec = spec;
+      }
+
+      @Override
+      public void initialize(InitializationInput initializationInput) {
+        shardId = initializationInput.shardId();
+        MDC.put(SHARD_ID_MDC_KEY, shardId);
+        try {
+          LOG.info("Initializing @ Sequence: {}", initializationInput.extendedSequenceNumber());
+        } finally {
+          MDC.remove(SHARD_ID_MDC_KEY);
+        }
+      }
+
+      @Override
+      public void processRecords(ProcessRecordsInput processRecordsInput) {
+        MDC.put(SHARD_ID_MDC_KEY, shardId);
+        try {
+          List<KinesisClientRecord> records = processRecordsInput.records();
+          LOG.info("Processing {} record(s)", records.size());
+          records.forEach(
+              r -> {
+                LOG.info(
+                    "Processing record pk: {} -- Seq: {}", r.partitionKey(), r.sequenceNumber());
+                output.output((T) r);
+              });
+        } catch (Throwable t) {
+          LOG.error("Caught throwable while processing records. Aborting.");
+          Runtime.getRuntime().halt(1);
+        } finally {
+          MDC.remove(SHARD_ID_MDC_KEY);
+        }
+      }
+
+      @Override
+      public void leaseLost(LeaseLostInput leaseLostInput) {
+        MDC.put(SHARD_ID_MDC_KEY, shardId);
+        try {
+          LOG.info("Lost lease, so terminating.");
+        } finally {
+          MDC.remove(SHARD_ID_MDC_KEY);
+        }
+      }
+
+      @Override
+      public void shardEnded(ShardEndedInput shardEndedInput) {
+        MDC.put(SHARD_ID_MDC_KEY, shardId);
+        try {
+          LOG.info("Reached shard end checkpointing.");
+          shardEndedInput.checkpointer().checkpoint();
+        } catch (ShutdownException | InvalidStateException e) {
+          LOG.error("Exception while checkpointing at shard end. Giving up.", e);
+        } finally {
+          MDC.remove(SHARD_ID_MDC_KEY);
+        }
+      }
+
+      @Override
+      public void shutdownRequested(ShutdownRequestedInput shutdownRequestedInput) {
+        MDC.put(SHARD_ID_MDC_KEY, shardId);
+        try {
+          LOG.info("Scheduler is shutting down, checkpointing.");
+          shutdownRequestedInput.checkpointer().checkpoint();
+        } catch (ShutdownException | InvalidStateException e) {
+          LOG.error("Exception while checkpointing at requested shutdown. Giving up.", e);
+        } finally {
+          MDC.remove(SHARD_ID_MDC_KEY);
+        }
+      }
     }
   }
 
