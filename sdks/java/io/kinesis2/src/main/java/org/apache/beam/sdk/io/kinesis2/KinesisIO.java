@@ -42,6 +42,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingDeque;
 import javax.annotation.Nullable;
 import org.apache.beam.sdk.annotations.Experimental;
+import org.apache.beam.sdk.coders.Coder;
+import org.apache.beam.sdk.coders.ListCoder;
 import org.apache.beam.sdk.coders.SerializableCoder;
 import org.apache.beam.sdk.io.Read.Unbounded;
 import org.apache.beam.sdk.transforms.Create;
@@ -476,10 +478,7 @@ public final class KinesisIO {
     abstract String getStreamName();
 
     @Nullable
-    abstract SerializableFunction<List<Record>, T> getRecieveRecords();
-
-    @Nullable
-    abstract KinesisAsyncClient getKinesisAsyncClient();
+    abstract SerializableFunction<Void, KinesisAsyncClient> getKinesisAsyncClientFn();
 
     @Nullable
     abstract String getConsumerArn();
@@ -493,15 +492,16 @@ public final class KinesisIO {
     @Nullable
     abstract SerializableFunction<SubscribeToShardEvent, T> getSubscribeResponseMapperFn();
 
+    @Nullable
+    abstract Coder<T> getCoder();
+
     abstract Builder<T> toBuilder();
 
     @AutoValue.Builder
     abstract static class Builder<T> {
       abstract Builder<T> setStreamName(String streamName);
 
-      abstract Builder<T> setRecieveRecords(SerializableFunction<List<Record>, T> recieveRecords);
-
-      abstract Builder<T> setKinesisAsyncClient(KinesisAsyncClient client);
+      abstract Builder<T> setKinesisAsyncClientFn(SerializableFunction<Void, KinesisAsyncClient> kinesisAsyncClientFn);
 
       abstract Builder<T> setConsumerArn(String consumerArn);
 
@@ -512,6 +512,8 @@ public final class KinesisIO {
       abstract Builder<T> setSubscribeResponseMapperFn(
           SerializableFunction<SubscribeToShardEvent, T> subscribeResponseMapperFn);
 
+      abstract Builder<T> setCoder(Coder<T> coder);
+
       abstract Subscribe<T> build();
     }
 
@@ -520,12 +522,8 @@ public final class KinesisIO {
       return toBuilder().setStreamName(streamName).build();
     }
 
-    public Subscribe<T> withRecieveRecords(SerializableFunction<List<Record>, T> recieveRecords) {
-      return toBuilder().setRecieveRecords(recieveRecords).build();
-    }
-
-    public Subscribe<T> withKinesisAsyncClient(KinesisAsyncClient client) {
-      return toBuilder().setKinesisAsyncClient(client).build();
+    public Subscribe<T> withKinesisAsyncClientFn(SerializableFunction<Void, KinesisAsyncClient> kinesisAsyncClientFn) {
+      return toBuilder().setKinesisAsyncClientFn(kinesisAsyncClientFn).build();
     }
 
     public Subscribe<T> withConsumerArn(String consumerArn) {
@@ -545,17 +543,22 @@ public final class KinesisIO {
       return toBuilder().setSubscribeResponseMapperFn(subscribeResponseMapperFn).build();
     }
 
+    public Subscribe<T> withCoder(Coder<T> coder) {
+      checkArgument(coder != null, "coder can not be null");
+      return toBuilder().setCoder(coder).build();
+    }
+
     public Subscribe<List<Record>> items() {
-      return withSubscribeResponseMapperFn(new ItemsMapper());
-      // .withCoder(ListCoder.of(MapCoder.of(StringUtf8Coder.of(), AttributeValueCoder.of())));
+      return withSubscribeResponseMapperFn(new ItemsMapper())
+          .withCoder(ListCoder.of(RecordCoder.of()));
     }
 
     @Override
     public PCollection<T> expand(PBegin input) {
-
       PCollection<Subscribe<T>> splits =
           (PCollection<Subscribe<T>>)
-              input.apply("Create", Create.of(this)).apply("Split", ParDo.of(new SplitFn()));
+              input.apply("Create", Create.of(this))
+                  .apply("Split", ParDo.of(new SplitFn()));
       splits.setCoder(SerializableCoder.of(new TypeDescriptor<Subscribe<T>>() {}));
 
       PCollection<T> output =
@@ -563,17 +566,18 @@ public final class KinesisIO {
               splits
                   .apply("Reshuffle", Reshuffle.viaRandomKey())
                   .apply("Listening", ParDo.of(new SubscribeFn<>()));
-
-      // output.setCoder(getCoder());
+      output.setCoder(getCoder());
       return output;
     }
 
     private static class SplitFn<T> extends DoFn<Subscribe<T>, Subscribe<T>> {
       @ProcessElement
       public void processElement(@Element Subscribe<T> spec, OutputReceiver<Subscribe<T>> out) {
+        KinesisAsyncClient client = spec.getKinesisAsyncClientFn().apply(null);
+
         ListShardsRequest request =
             ListShardsRequest.builder().streamName(spec.getStreamName()).build();
-        ListShardsResponse response = spec.getKinesisAsyncClient().listShards(request).join();
+        ListShardsResponse response = client.listShards(request).join();
         response.shards().forEach(s -> out.output(spec.withShardId(s.shardId())));
       }
     }
@@ -596,11 +600,11 @@ public final class KinesisIO {
       }
     }
 
-    private static class KinesisSubscriberSDK {
-      private DoFn.OutputReceiver out;
-      private Subscribe spec;
+    private static class KinesisSubscriberSDK<T> {
+      private DoFn.OutputReceiver<T> out;
+      private Subscribe<T> spec;
 
-      public KinesisSubscriberSDK(DoFn.OutputReceiver out, Subscribe spec) {
+      public KinesisSubscriberSDK(DoFn.OutputReceiver<T> out, Subscribe<T> spec) {
         this.out = out;
         this.spec = spec;
       }
@@ -610,7 +614,8 @@ public final class KinesisIO {
         SubscribeToShardResponseHandler.Visitor visitor =
             SubscribeToShardResponseHandler.Visitor.builder()
                 .onSubscribeToShardEvent(
-                    e -> out.output(spec.getSubscribeResponseMapperFn().apply(e)))
+                    e -> out.output(spec.getSubscribeResponseMapperFn().apply(e))
+                )
                 .build();
         SubscribeToShardResponseHandler responseHandler =
             SubscribeToShardResponseHandler.builder()
@@ -618,7 +623,8 @@ public final class KinesisIO {
                 .subscriber(visitor)
                 .build();
 
-        return spec.getKinesisAsyncClient().subscribeToShard(request, responseHandler);
+        KinesisAsyncClient client = spec.getKinesisAsyncClientFn().apply(null);
+        return client.subscribeToShard(request, responseHandler);
       }
 
       public void listen() {
@@ -628,7 +634,6 @@ public final class KinesisIO {
                 .shardId(spec.getShardId())
                 .startingPosition(s -> s.type(spec.getStartingPosition()))
                 .build();
-
         responseHandlerBuilder_VisitorBuilder(request).join();
       }
     }
