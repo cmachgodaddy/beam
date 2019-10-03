@@ -31,7 +31,6 @@ import software.amazon.awssdk.services.kinesis.model.Record;
 import software.amazon.awssdk.services.kinesis.model.ShardIteratorType;
 
 import java.io.Serializable;
-import java.util.List;
 
 /** Test Coverage for the IO. */
 public class KinesisSubscriberTest implements Serializable {
