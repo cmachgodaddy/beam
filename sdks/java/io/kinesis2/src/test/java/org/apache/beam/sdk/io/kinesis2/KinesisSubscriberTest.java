@@ -42,33 +42,31 @@ public class KinesisSubscriberTest implements Serializable {
   public void runSubscribe() {
     pipeline
         .apply(KinesisIO.subscribe()
-            .withStreamName("yourStreamName")
-            .withConsumerArn("yourConsumerArn")
+            .withStreamName("journal-Bills-v2")
+            .withConsumerArn("arn:aws:kinesis:us-west-2:795945668521:stream/journal-Bills-v2/consumer/test-beam-subscriber:1569881070")
             .withStartingPosition(ShardIteratorType.TRIM_HORIZON)
             .withKinesisAsyncClientFn((SerializableFunction<Void, KinesisAsyncClient>) input -> {
               KinesisAsyncClient client = KinesisAsyncClient.builder()
                   .httpClientBuilder(NettyNioAsyncHttpClient.builder()
                       .maxConcurrency(2))
-                      //.maxPendingConnectionAcquires(10_000)
+                  //.maxPendingConnectionAcquires(10_000)
                   .region(Region.US_WEST_2)
                   //.credentialsProvider(new AWSStaticCredentialsProvider(new BasicAWSCredentials("", "")))
                   .build();
               return client;
-            }).items())
-        .apply(ParDo.of(new DoFn<List<Record>, String>(){
+            }))
+        .apply(ParDo.of(new DoFn<Record, String>() {
           @ProcessElement
-          public void processElement(@Element List<Record> records, OutputReceiver<String> out) {
-            records.forEach(r -> {
-              String data = "";
-              try {
-                data = new String(r.data().asByteArray(), "UTF-8");
-              } catch (Exception ex) {
-                System.out.println(ex.getMessage());
-              }
-              String temp = "Received: " + r.partitionKey() + " - " + r.sequenceNumber() + " - Data: " + data;
-              out.output(temp);
-              System.out.println(temp);
-            });
+          public void processElement(@Element Record record, OutputReceiver<String> out) {
+            String data = "";
+            try {
+              data = new String(record.data().asByteArray(), "UTF-8");
+            } catch (Exception ex) {
+              System.out.println(ex.getMessage());
+            }
+            String temp = "Received: " + record.partitionKey() + " - " + record.sequenceNumber() + " - Data: " + data;
+            System.out.println(temp);
+            out.output(temp);
           }
         }));
 

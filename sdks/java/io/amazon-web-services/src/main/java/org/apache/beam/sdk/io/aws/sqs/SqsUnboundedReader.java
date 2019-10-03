@@ -42,6 +42,7 @@ class SqsUnboundedReader extends UnboundedSource.UnboundedReader<Message> implem
   private Message current;
   private final Queue<Message> messagesNotYetRead;
   private List<Message> messagesToDelete;
+
   private Instant oldestPendingTimestamp = BoundedWindow.TIMESTAMP_MIN_VALUE;
 
   public SqsUnboundedReader(SqsUnboundedSource source, SqsCheckpointMark sqsCheckpointMark) {
