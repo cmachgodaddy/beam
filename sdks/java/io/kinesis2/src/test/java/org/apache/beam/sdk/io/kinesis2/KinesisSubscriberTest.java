@@ -22,6 +22,8 @@ import org.apache.beam.sdk.testing.TestPipeline;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.TupleTag;
 import org.junit.Rule;
 import org.junit.Test;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
@@ -32,6 +34,7 @@ import software.amazon.awssdk.services.kinesis.model.ShardIteratorType;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /** Test Coverage for the IO. */
 public class KinesisSubscriberTest implements Serializable {
@@ -40,22 +43,27 @@ public class KinesisSubscriberTest implements Serializable {
 
   @Test
   public void runSubscribe() {
-    pipeline
+    TupleTag<CompletableFuture<Void>> futureTupleTag = new TupleTag<>();
+
+    PCollection<List<Record>> listOfRecords = pipeline
         .apply(KinesisIO.subscribe()
-            .withStreamName("yourStreamName")
-            .withConsumerArn("yourConsumerArn")
+            .withStreamName("yourstreamname")
+            .withConsumerArn("your consume arn")
             .withStartingPosition(ShardIteratorType.TRIM_HORIZON)
+            .withCompletableFutureTag(futureTupleTag)
             .withKinesisAsyncClientFn((SerializableFunction<Void, KinesisAsyncClient>) input -> {
               KinesisAsyncClient client = KinesisAsyncClient.builder()
                   .httpClientBuilder(NettyNioAsyncHttpClient.builder()
                       .maxConcurrency(2))
-                      //.maxPendingConnectionAcquires(10_000)
+                  //.maxPendingConnectionAcquires(10_000)
                   .region(Region.US_WEST_2)
                   //.credentialsProvider(new AWSStaticCredentialsProvider(new BasicAWSCredentials("", "")))
                   .build();
               return client;
-            }).items())
-        .apply(ParDo.of(new DoFn<List<Record>, String>(){
+            }).items());
+
+    listOfRecords
+        .apply(ParDo.of(new DoFn<List<Record>, String>() {
           @ProcessElement
           public void processElement(@Element List<Record> records, OutputReceiver<String> out) {
             records.forEach(r -> {

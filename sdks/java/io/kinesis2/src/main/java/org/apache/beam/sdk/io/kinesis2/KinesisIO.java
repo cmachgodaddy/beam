@@ -34,6 +34,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
@@ -41,6 +42,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingDeque;
 import javax.annotation.Nullable;
+
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import org.apache.beam.sdk.annotations.Experimental;
 import org.apache.beam.sdk.coders.Coder;
 import org.apache.beam.sdk.coders.ListCoder;
@@ -52,9 +55,14 @@ import org.apache.beam.sdk.transforms.PTransform;
 import org.apache.beam.sdk.transforms.ParDo;
 import org.apache.beam.sdk.transforms.Reshuffle;
 import org.apache.beam.sdk.transforms.SerializableFunction;
+import org.apache.beam.sdk.transforms.windowing.BoundedWindow;
+import org.apache.beam.sdk.transforms.windowing.GlobalWindow;
 import org.apache.beam.sdk.values.PBegin;
 import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.PDone;
+import org.apache.beam.sdk.values.TupleTag;
+import org.apache.beam.sdk.values.TupleTagList;
 import org.apache.beam.sdk.values.TypeDescriptor;
 import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.annotations.VisibleForTesting;
 import org.joda.time.Duration;
@@ -495,6 +503,9 @@ public final class KinesisIO {
     @Nullable
     abstract Coder<T> getCoder();
 
+    @Nullable
+    abstract TupleTag<CompletableFuture<Void>> getCompletableFutureTag();
+
     abstract Builder<T> toBuilder();
 
     @AutoValue.Builder
@@ -513,6 +524,8 @@ public final class KinesisIO {
           SerializableFunction<SubscribeToShardEvent, T> subscribeResponseMapperFn);
 
       abstract Builder<T> setCoder(Coder<T> coder);
+
+      abstract Builder<T> setCompletableFutureTag(TupleTag<CompletableFuture<Void>> completableFutureTag);
 
       abstract Subscribe<T> build();
     }
@@ -548,6 +561,10 @@ public final class KinesisIO {
       return toBuilder().setCoder(coder).build();
     }
 
+    public Subscribe<T> withCompletableFutureTag(TupleTag<CompletableFuture<Void>> completableFutureTag) {
+      return toBuilder().setCompletableFutureTag(completableFutureTag).build();
+    }
+
     public Subscribe<List<Record>> items() {
       return withSubscribeResponseMapperFn(new ItemsMapper())
           .withCoder(ListCoder.of(RecordCoder.of()));
@@ -565,7 +582,8 @@ public final class KinesisIO {
           (PCollection<T>)
               splits
                   .apply("Reshuffle", Reshuffle.viaRandomKey())
-                  .apply("Listening", ParDo.of(new SubscribeFn<>()));
+                  .apply("Listening", ParDo.of(new SubscribeFn<>())
+                      .withOutputTags(getCompletableFutureTag(), TupleTagList.empty()));
       output.setCoder(getCoder());
       return output;
     }
@@ -583,9 +601,25 @@ public final class KinesisIO {
     }
 
     private static class SubscribeFn<T> extends DoFn<Subscribe<T>, T> {
+      private List<T> batch;
+
+      @StartBundle
+      public void startBundle() {
+        batch = new ArrayList<>();
+      }
+
       @ProcessElement
-      public void processElement(@Element Subscribe<T> spec, OutputReceiver<T> out) {
-        new KinesisSubscriberSDK(out, spec).listen();
+      public void processElement(@Element Subscribe<T> spec, MultiOutputReceiver out) {
+        CompletableFuture<Void> future = new KinesisSubscriberSDK(spec, batch).listen();
+        out.get(spec.getCompletableFutureTag()).output(future);
+      }
+
+      @FinishBundle
+      public void finishBundle(FinishBundleContext context) {
+        batch.forEach(l ->
+            context.output(l, BoundedWindow.TIMESTAMP_MIN_VALUE, GlobalWindow.INSTANCE)
+        );
+        batch = new ArrayList<>();
       }
     }
 
@@ -601,20 +635,24 @@ public final class KinesisIO {
     }
 
     private static class KinesisSubscriberSDK<T> {
-      private DoFn.OutputReceiver<T> out;
+      //private DoFn.OutputReceiver<T> out;
       private Subscribe<T> spec;
+      private List<T> batch;
 
-      public KinesisSubscriberSDK(DoFn.OutputReceiver<T> out, Subscribe<T> spec) {
-        this.out = out;
+      public KinesisSubscriberSDK(Subscribe<T> spec, List<T> batch) {
+        //this.out = out;
         this.spec = spec;
+        this.batch = batch;
       }
 
+      @CanIgnoreReturnValue
       private CompletableFuture<Void> responseHandlerBuilder_VisitorBuilder(
           SubscribeToShardRequest request) {
         SubscribeToShardResponseHandler.Visitor visitor =
             SubscribeToShardResponseHandler.Visitor.builder()
                 .onSubscribeToShardEvent(
-                    e -> out.output(spec.getSubscribeResponseMapperFn().apply(e))
+                    //e -> out.output(spec.getSubscribeResponseMapperFn().apply(e))
+                    e -> batch.add(spec.getSubscribeResponseMapperFn().apply(e))
                 )
                 .build();
         SubscribeToShardResponseHandler responseHandler =
@@ -627,14 +665,15 @@ public final class KinesisIO {
         return client.subscribeToShard(request, responseHandler);
       }
 
-      public void listen() {
+      @CanIgnoreReturnValue
+      public CompletableFuture<Void> listen() {
         SubscribeToShardRequest request =
             SubscribeToShardRequest.builder()
                 .consumerARN(spec.getConsumerArn())
                 .shardId(spec.getShardId())
                 .startingPosition(s -> s.type(spec.getStartingPosition()))
                 .build();
-        responseHandlerBuilder_VisitorBuilder(request).join();
+        return responseHandlerBuilder_VisitorBuilder(request);
       }
     }
 
