@@ -41,8 +41,8 @@ public class KinesisSubscriberTest implements Serializable {
   public void runSubscribe() {
     pipeline
         .apply(KinesisIO.subscribe()
-            .withStreamName("your stream name")
-            .withConsumerArn("your consumer arn")
+            .withStreamName("journal-Bills-v2")
+            .withConsumerArn("arn:aws:kinesis:us-west-2:795945668521:stream/journal-Bills-v2/consumer/test-beam-subscriber:1569881070")
             .withStartingPosition(ShardIteratorType.TRIM_HORIZON)
             .withKinesisAsyncClientFn((SerializableFunction<Void, KinesisAsyncClient>) input -> {
               KinesisAsyncClient client = KinesisAsyncClient.builder()

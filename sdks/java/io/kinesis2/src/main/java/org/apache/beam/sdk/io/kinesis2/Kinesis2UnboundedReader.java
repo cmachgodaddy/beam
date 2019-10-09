@@ -11,9 +11,11 @@ import software.amazon.awssdk.services.kinesis.model.SubscribeToShardResponseHan
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.NoSuchElementException;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -23,7 +25,7 @@ public class Kinesis2UnboundedReader extends UnboundedSource.UnboundedReader<Rec
   private final Kinesis2UnboundedSource source;
   private Record current;
 
-  private final Supplier<Queue<Record>> messagesNotYetRead;
+  private final Queue<Record> messagesNotYetRead;
 
   private Instant oldestPendingTimestamp = BoundedWindow.TIMESTAMP_MIN_VALUE;
 
@@ -31,25 +33,22 @@ public class Kinesis2UnboundedReader extends UnboundedSource.UnboundedReader<Rec
     this.source = source;
     this.current = null;
 
-    this.messagesNotYetRead = Suppliers.memoize((Supplier<Queue<Record>> & Serializable) () ->
-        new ArrayDeque<>());
+    this.messagesNotYetRead = //Suppliers.memoize((Supplier<Queue<Record>> & Serializable) () ->
+        new ArrayDeque<>();
+    subscribeToShard(source.getShardId());
   }
 
   @Override
   public boolean start() throws IOException {
-    subscribeToShard(source.getShardId());
     return advance();
   }
 
   @Override
   public boolean advance() throws IOException {
-    if (messagesNotYetRead.get().isEmpty()) {
-      try {
-        Thread.sleep(1000);
-      } catch (Exception ex) {}
+    if (!messagesNotYetRead.isEmpty()) {
+      current = messagesNotYetRead.poll();
     }
 
-    current = messagesNotYetRead.get().poll();
     if (current == null) {
       return false;
     }
@@ -68,6 +67,14 @@ public class Kinesis2UnboundedReader extends UnboundedSource.UnboundedReader<Rec
       throw new NoSuchElementException();
     }
     return current;
+  }
+
+  @Override
+  public byte[] getCurrentRecordId() throws NoSuchElementException {
+    if (current == null) {
+      throw new NoSuchElementException();
+    }
+    return current.sequenceNumber().getBytes(StandardCharsets.UTF_8);
   }
 
   @Override
@@ -99,12 +106,14 @@ public class Kinesis2UnboundedReader extends UnboundedSource.UnboundedReader<Rec
     return source;
   }
 
-  private void responseHandlerBuilder_VisitorBuilder(
+  private CompletableFuture<Void> responseHandlerBuilder_VisitorBuilder(
       SubscribeToShardRequest request) throws ExecutionException, TimeoutException, InterruptedException {
     SubscribeToShardResponseHandler.Visitor visitor =
         SubscribeToShardResponseHandler.Visitor.builder()
             .onSubscribeToShardEvent(
-                e -> messagesNotYetRead.get().addAll(e.records())
+                e -> e.records().forEach(r -> {
+                  messagesNotYetRead.add(r);
+                })
             )
             .build();
 
@@ -114,7 +123,7 @@ public class Kinesis2UnboundedReader extends UnboundedSource.UnboundedReader<Rec
             .subscriber(visitor)
             .build();
 
-    source.getKinesisClient().subscribeToShard(request, responseHandler).join();
+    return source.getKinesisClient().subscribeToShard(request, responseHandler);
   }
 
   private void subscribeToShard(String shardId) {
@@ -125,7 +134,12 @@ public class Kinesis2UnboundedReader extends UnboundedSource.UnboundedReader<Rec
             .startingPosition(s -> s.type(source.getReader().getStartingPosition()))
             .build();
     try {
-      responseHandlerBuilder_VisitorBuilder(request);
+      //while (true) {
+        CompletableFuture<Void> future = responseHandlerBuilder_VisitorBuilder(request);
+        Thread.sleep(3000);
+        future.complete(null);
+        //source.getKinesisClient().close();
+      //}
     } catch (Exception ex) {
 
     }
