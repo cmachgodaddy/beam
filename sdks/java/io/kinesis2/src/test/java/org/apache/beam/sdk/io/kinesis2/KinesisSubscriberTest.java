@@ -41,8 +41,8 @@ public class KinesisSubscriberTest implements Serializable {
   public void runSubscribe() {
     pipeline
         .apply(KinesisIO.subscribe()
-            .withStreamName("journal-Bills-v2")
-            .withConsumerArn("arn:aws:kinesis:us-west-2:795945668521:stream/journal-Bills-v2/consumer/test-beam-subscriber:1569881070")
+            .withStreamName("yourStreamName")
+            .withConsumerArn("yourConsumerArn")
             .withStartingPosition(ShardIteratorType.TRIM_HORIZON)
             .withKinesisAsyncClientFn((SerializableFunction<Void, KinesisAsyncClient>) input -> {
               KinesisAsyncClient client = KinesisAsyncClient.builder()
@@ -53,7 +53,7 @@ public class KinesisSubscriberTest implements Serializable {
                   //.credentialsProvider(new AWSStaticCredentialsProvider(new BasicAWSCredentials("", "")))
                   .build();
               return client;
-            }))
+            })).setCoder(RecordCoder.of())
         .apply(ParDo.of(new DoFn<Record, String>() {
           @ProcessElement
           public void processElement(@Element Record record, OutputReceiver<String> out) {

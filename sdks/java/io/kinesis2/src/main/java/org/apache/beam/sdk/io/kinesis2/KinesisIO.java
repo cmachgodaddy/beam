@@ -535,7 +535,7 @@ public final class KinesisIO {
 
       Unbounded<Record> unbounded =
           org.apache.beam.sdk.io.Read.from(
-              new Kinesis2UnboundedSource("shardId-000000000001", this));
+              new Kinesis2UnboundedSource("shardId-000000000001", null,this));
 
       return input.apply(unbounded);
     }
