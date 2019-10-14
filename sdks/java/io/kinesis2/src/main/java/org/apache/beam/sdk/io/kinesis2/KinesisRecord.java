@@ -20,13 +20,13 @@ package org.apache.beam.sdk.io.kinesis2;
 import static org.apache.commons.lang.builder.HashCodeBuilder.reflectionHashCode;
 
 import com.amazonaws.services.kinesis.clientlibrary.types.ExtendedSequenceNumber;
-import software.amazon.awssdk.services.kinesis.model.Record;
+import com.amazonaws.services.kinesis.clientlibrary.types.UserRecord;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import org.apache.commons.lang.builder.EqualsBuilder;
 import org.joda.time.Instant;
 
-/** {@link Record} enhanced with utility methods. */
+/** {@link UserRecord} enhanced with utility methods. */
 public class KinesisRecord {
 
   private Instant readTime;
@@ -38,13 +38,13 @@ public class KinesisRecord {
   private ByteBuffer data;
   private String partitionKey;
 
-  public KinesisRecord(Record record, String streamName, String shardId) {
+  public KinesisRecord(UserRecord record, String streamName, String shardId) {
     this(
-        record.data().asByteBuffer(),
-        record.sequenceNumber(),
-        4l, // record.sequenceNumber(),
-        record.partitionKey(),
-        new Instant(record.approximateArrivalTimestamp()),
+        record.getData(),
+        record.getSequenceNumber(),
+        record.getSubSequenceNumber(),
+        record.getPartitionKey(),
+        new Instant(record.getApproximateArrivalTimestamp()),
         Instant.now(),
         streamName,
         shardId);
