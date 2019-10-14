@@ -34,6 +34,7 @@ class SqsCheckpointMark implements UnboundedSource.CheckpointMark, Serializable 
   public SqsCheckpointMark(SqsUnboundedReader reader, Collection<Message> messagesToDelete) {
     this.reader = Optional.of(reader);
     this.messagesToDelete = ImmutableList.copyOf(messagesToDelete);
+    ;
   }
 
   @Override

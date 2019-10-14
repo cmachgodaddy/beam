@@ -235,7 +235,6 @@ public final class DynamoDBIO {
                   .apply("Reshuffle", Reshuffle.viaRandomKey())
                   .apply("Read", ParDo.of(new ReadFn()));
       output.setCoder(getCoder());
-
       return output;
     }
 

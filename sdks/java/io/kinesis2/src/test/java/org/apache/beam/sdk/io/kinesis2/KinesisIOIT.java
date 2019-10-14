@@ -68,7 +68,6 @@ public class KinesisIOIT implements Serializable {
   @Test
   public void testWriteThenRead() {
     runWrite();
-
     runRead();
   }
 
